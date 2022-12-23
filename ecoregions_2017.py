@@ -7,9 +7,10 @@ with fiona.collection('data\ecoregions\Ecoregions2017.shp', "r") as input:
     BLUE = '#6699cc'
     fig = plt.figure(1, figsize=(6, 6), dpi=90)
     ax = fig.add_subplot(111)
-    for f in input[:100]:
-            patch = PolygonPatch(f['geometry'],fc=BLUE ,ec='black',alpha=0.5)
-            ax.add_patch(patch)
+    for f in input[:1]:
+        patch = PolygonPatch(f['geometry'],fc=BLUE ,ec='black',alpha=0.5)
+        ax.add_patch(patch)
+    print(input[1]['properties'])
+    print(len(input))
     plt.autoscale()
     plt.show()
-
