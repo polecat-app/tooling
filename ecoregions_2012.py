@@ -43,7 +43,6 @@ SQL = 'SELECT DISTINCT ECOREGION_NAME FROM ecoregions;'
 results = cur.execute(SQL).fetchall()
 ECO_names_animals = []
 for region in results:
-    print(region[0])
     ECO_names_animals.append(region[0])
 cur.close()
 
@@ -56,9 +55,20 @@ nr_false = np.size(check) - nr_true
 
 missing_eco = ECO_names_animals[~check]
 
-eco_replacement = []
+eco_replacement_dict = {}
+eco_regions_unmatched = []
+
+# make a dict for matching the missing ecoregions, defaul similarity of 0.6 is used. 
+
+
 for ecoregion in missing_eco:
-    eco_replacement.append((ecoregion, difflib.get_close_matches(ecoregion, ECO_names_shapefile)[0]))
+    matches = difflib.get_close_matches(ecoregion, ECO_names_shapefile)
+    if matches == []:
+        eco_regions_unmatched.append(ecoregion)
+    else: 
+        eco_replacement_dict[ecoregion] = difflib.get_close_matches(ecoregion, ECO_names_shapefile)[0]
 
-print(eco_replacement)
-
+if not eco_regions_unmatched:
+    print("succes! all ecoregions have been matched")
+else: 
+    print("not alle coregions have been matched. following ecoregions are missing: ", eco_regions_unmatched)
