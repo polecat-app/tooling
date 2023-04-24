@@ -1,14 +1,23 @@
+import asyncio
+
 import wikipedia
 import wikipediaapi
 import os
 import openai
 import tiktoken
 from dotenv import load_dotenv
-from supabase import create_client
-import supabase
+from supabase import create_client, Client
+
 
 load_dotenv()
+
+# Environment variables
 api_key = os.getenv("OPENAI_API_KEY")
+supabase_url = os.getenv('SUPABASE_URL')
+supabase_key = os.getenv('SUPABASE_KEY')
+
+MAX_RETURN_WORD_COUNT = 100
+
 
 def get_descriptive_text_from_wiki(animal_searchname, max_words, min_words, language='en' ):
     # Set the language for the wikipedia library
@@ -58,6 +67,7 @@ def get_descriptive_text_from_wiki(animal_searchname, max_words, min_words, lang
 
     return total_text, word_count
 
+
 def num_tokens_from_messages(messages, model="gpt-3.5-turbo-0301"):
   """Returns the number of tokens used by a list of messages."""
   try:
@@ -78,30 +88,10 @@ def num_tokens_from_messages(messages, model="gpt-3.5-turbo-0301"):
       raise NotImplementedError(f"""num_tokens_from_messages() is not presently implemented for model {model}.
   See https://github.com/openai/openai-python/blob/main/chatml.md for information on how messages are converted to tokens.""")
 
-def generate_chatgpt_description(animal_name, input_text, input_word_count, output_word_count):
-    # Set up the OpenAI API client
-    openai.api_key = api_key
-
-    # use gpt 3.5 turbo, even though it is not made for completion but for chat, because it is 10% of the cost of a davinci model. 
-    if input_word_count < output_word_count:
-        output_word_count = input_word_count
-
-    params = {
-        'model': 'gpt-3.5-turbo',
-        'messages' : [
-                {"role": "system", "content": f"You are an {animal_name} talking about your life"},
-                {"role": "user", "content": f'Act as if you are an {animal_name}. Write a description (max {output_word_count} words) of your life based on the following text:\n\n "{input_text}"\n.'}
-            ],
-        'temperature': 0.2,
-        'max_tokens' : 250,
-        'presence_penalty' : 1.0,
-        'frequency_penalty' : 1.0
-    }
-
-    response = openai.ChatCompletion.create(**params)
-    return response.choices[0].message.content
 
 def get_records_from_supabase_species(client, from_species_id, to_species_id):
+    """Get records from the species table in the supabase database."""
+
     # Define the name of the view and the ID of the record to retrieve
     view_name = 'species_view'
 
@@ -110,48 +100,65 @@ def get_records_from_supabase_species(client, from_species_id, to_species_id):
     
     return response
 
-def write_description_to_supabase(client, description_id, species_id, description):
-    
-    record = {'description_id': description_id,
-              'species_id': species_id, 
-              'description': description}
-    
-    data = client.table('species_descriptions').insert(record).execute()
 
-def main():
-    output_wordcount = 100; # the default value for length of species descriptive text
-    start_id = 1
-    end_id = 3
+async def coroutine_for_getting_and_writing_description(species: dict, client: Client):
+    """Get the description for a species and write it to the database."""
+
+    # Determine input prompt
+    latin_name = species['genus'] + " " + species['species']
+    wiki_text, in_word_count = get_descriptive_text_from_wiki(latin_name, 500, 100)
+
+    # Set up the OpenAI API client
+    openai.api_key = api_key
+    return_word_count = min(MAX_RETURN_WORD_COUNT, in_word_count)
+    params = {
+        'model': 'gpt-3.5-turbo',
+        'messages' : [
+            {"role": "system", "content": f"You are an {latin_name} talking about your life"},
+            {"role": "user", "content": f'Act as if you are an {latin_name}. Write a description (max {return_word_count} words) of your life based on the following text:\n\n "{wiki_text}"\n.'}
+        ],
+        'temperature': 0.2,
+        'max_tokens' : 250,
+        'presence_penalty' : 1.0,
+        'frequency_penalty' : 1.0
+    }
+
+    # Asynchronously generate description
+    response = await openai.ChatCompletion.acreate(**params)
+    description = response.choices[0].message.content
+    print("generated description for: ", latin_name)
+
+    # Write to db
+    record = {
+        'description_id': species["species_id"],
+        'species_id': species["species_id"],
+        'description': description
+    }
+    data = client.table('species_descriptions').insert(record).execute()
+    print("wrote into db: ", latin_name)
+
+
+async def main():
+
+    # Define the range of species to generate descriptions for
+    start_id = 3
+    end_id = 20
     
     # Set up a Supabase client instance
-    supabase_url = os.getenv('SUPABASE_URL')
-    supabase_key = os.getenv('SUPABASE_ANON_KEY')
     client = create_client(supabase_url, supabase_key)
 
     species_records = get_records_from_supabase_species(client, start_id, end_id).data
-    
-    for species in species_records:
-        latin_name = species['genus'] + " " + species['species']
-        wiki_text, wordcount = get_descriptive_text_from_wiki(latin_name, 500, 100)
-        
-        species.update({'latin_name':  latin_name,
-                     'wiki_text': wiki_text,
-                     'wordcount': wordcount})
-    
-    for species in species_records:
-        chat_gpt_text = generate_chatgpt_description(species['latin_name'], species['wiki_text'], species['wordcount'], 100)
-        species.update({'chat_gpt_text' : chat_gpt_text})
-        write_description_to_supabase(client, species['species_id'], species['species_id'], chat_gpt_text)
 
+    # Define the tasks to run asynchronously
+    tasks = []
+    for species in species_records:
+        tasks.append(
+            coroutine_for_getting_and_writing_description(species, client)
+        )
 
-    #query = "Delichon urbica"
-    #wiki_text, wordcount = get_descriptive_text_from_wiki(query, 500, 100)
-    #chat_gpt_text = generate_chatgpt_description(query, wiki_text, wordcount, 100)
-    #print(chat_gpt_text)
+    # Asynchronously run all coroutines
+    await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":
-    main()
-
-
-    
+    asyncio.run(main())
