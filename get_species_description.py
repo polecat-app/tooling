@@ -5,6 +5,7 @@ import openai
 import tiktoken
 from dotenv import load_dotenv
 from supabase import create_client
+import supabase
 
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
@@ -100,13 +101,7 @@ def generate_chatgpt_description(animal_name, input_text, input_word_count, outp
     response = openai.ChatCompletion.create(**params)
     return response.choices[0].message.content
 
-def get_record_from_supabase_species(from_species_id, to_species_id):
-
-    # Set up a Supabase client instance
-    supabase_url = os.getenv('SUPABASE_URL')
-    supabase_key = os.getenv('SUPABASE_ANON_KEY')
-    client = create_client(supabase_url, supabase_key)
-
+def get_records_from_supabase_species(client, from_species_id, to_species_id):
     # Define the name of the view and the ID of the record to retrieve
     view_name = 'species_view'
 
@@ -115,12 +110,40 @@ def get_record_from_supabase_species(from_species_id, to_species_id):
     
     return response
 
+def write_description_to_supabase(client, description_id, species_id, description):
+    
+    record = {'description_id': description_id,
+              'species_id': species_id, 
+              'description': description}
+    
+    data = client.table('species_descriptions').insert(record).execute()
 
 def main():
-    species_records = get_record_from_supabase_species(1,5).data
-    for dict in species_records:
-        dict.update({'latin_name':  dict['genus'] + " " + dict['species']})
-   
+    output_wordcount = 100; # the default value for length of species descriptive text
+    start_id = 1
+    end_id = 3
+    
+    # Set up a Supabase client instance
+    supabase_url = os.getenv('SUPABASE_URL')
+    supabase_key = os.getenv('SUPABASE_ANON_KEY')
+    client = create_client(supabase_url, supabase_key)
+
+    species_records = get_records_from_supabase_species(client, start_id, end_id).data
+    
+    for species in species_records:
+        latin_name = species['genus'] + " " + species['species']
+        wiki_text, wordcount = get_descriptive_text_from_wiki(latin_name, 500, 100)
+        
+        species.update({'latin_name':  latin_name,
+                     'wiki_text': wiki_text,
+                     'wordcount': wordcount})
+    
+    for species in species_records:
+        chat_gpt_text = generate_chatgpt_description(species['latin_name'], species['wiki_text'], species['wordcount'], 100)
+        species.update({'chat_gpt_text' : chat_gpt_text})
+        write_description_to_supabase(client, species['species_id'], species['species_id'], chat_gpt_text)
+
+
     #query = "Delichon urbica"
     #wiki_text, wordcount = get_descriptive_text_from_wiki(query, 500, 100)
     #chat_gpt_text = generate_chatgpt_description(query, wiki_text, wordcount, 100)
