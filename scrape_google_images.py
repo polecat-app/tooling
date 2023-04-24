@@ -1,5 +1,6 @@
-import urllib
-import PIL
+import requests
+import os
+import io
 from PIL import Image
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -8,22 +9,24 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 
-# to prevent the following error we change the options of the web driver:
-# ERROR:device_event_log_impl.cc(215)] [17:16:46.922] 
-# USB: usb_device_handle_win.cc:1046 Failed to read descriptor from node connection: 
-# A device attached to the system is not functioning. (0x1F)
+def get_driver():
+    #selenium 4 - updated way of getting the web driver
+    # to prevent the following error we change the options of the web driver:
+    # ERROR:device_event_log_impl.cc(215)] [17:16:46.922] 
+    # USB: usb_device_handle_win.cc:1046 Failed to read descriptor from node connection: 
+    # A device attached to the system is not functioning. (0x1F)
 
-#selenium 4 - updated way of getting the web driver
-options = Options()
-options.add_argument("start-maximized")
-driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-driver.get("https://www.google.com")
-options.add_experimental_option('excludeSwitches', ['enable-logging'])
+    options = Options()
+    options.add_argument("start-maximized")
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    driver.get("https://www.google.com")
+    options.add_experimental_option('excludeSwitches', ['enable-logging'])
+    return driver
 
-def scrape_google_image(searchterm, max_links_to_fetch, sleep_between_interactions):
-
+def get_image_urls(searchterm:str, driver, max_links_to_fetch:int, sleep_between_interactions:float):
     # get the url + the driver to search
     google_url = "https://www.google.com/search?safe=off&site=&tbm=isch&source=hp&q={q}&oq={q}&gs_l=img".format(q = searchterm)
+    
     driver.get(google_url)
 
     # surpass "accept all" in the "Before you continue to Google" page
@@ -76,9 +79,40 @@ def scrape_google_image(searchterm, max_links_to_fetch, sleep_between_interactio
             print(e) 
     return(image_urls)
 
-image_urls = scrape_google_image("polecat", 50, 1)
+def save_image(folder_path:str, name:str, url:str, counter):
+    # open the url
+    try:
+        response = requests.get(url)
+    except Exception as e:
+        print(f"could not download {url} - {e}")
+        return
+    # save the image
+    try:
+        im = Image.open(io.BytesIO(response.content))
+        im.save(folder_path + "/" + name + "_" + str(counter) +'.jpg')
+        print(f"succes! saved image {url} as {folder_path}")
+    except Exception as e:
+        print(f"could not save {url} - {e}")
 
-for i in range(len(image_urls)):
-    image = PIL.Image.open(urllib.request.urlopen(image_urls[i]))
-    image.save("data/images/polecat_" + str(i) + '.jpg')
+
+def scrape_images_from_google(search_term: str, target_path = './images', number_images = 10):  
+    # search term
+    search_term_underscores = search_term.replace(" ", "_")
+    # make folder by search term name
+    target_folder = target_path + "/" + search_term_underscores
+    if not os.path.exists(target_folder):
+        os.makedirs(target_folder)
+    
+    # open driver and scrape the URLS
+    with get_driver() as driver:
+        res = get_image_urls(search_term, driver, number_images, 1.0)
+    
+    # save images in the target folder with increasing index
+    count = 0 
+    for url in res:
+        save_image(target_folder, search_term_underscores, url, count)
+        count += 1 
+    
+scrape_images_from_google("polecat") # inputs for target path and number of images are optional
+
 
