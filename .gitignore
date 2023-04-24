@@ -1,4 +1,5 @@
 # Data folders
+.idea
 data/
 images/
 # Byte-compiled / optimized / DLL files
