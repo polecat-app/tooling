@@ -14,19 +14,33 @@ supabase_client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_K
 
 
 def get_animal_image(animal_name):
-    # format the query URL with the animal name
-    query_url = f"https://en.wikipedia.org/w/api.php?action=query&format=json&prop=pageimages&titles={animal_name}&pithumbsize=500"
+    # perform a search on the Wikipedia API
+    search_url = f"https://en.wikipedia.org/w/api.php?action=query&format=json&list=search&srsearch={animal_name}&srprop=size&srinfo=suggestion&srwhat=text"
+    search_response = requests.get(search_url).json()
 
-    # make the API request
-    response = requests.get(query_url).json()
+    # extract the page title of the first search result
+    search_results = search_response['query']['search']
+    if not search_results:
+        print(f"No search results found for '{animal_name}'")
+        return None
+    page_title = search_results[0]['title']
 
-    # extract the image URL from the response
-    pages = response['query']['pages']
+    # retrieve the page information from the Wikipedia API
+    page_url = f"https://en.wikipedia.org/w/api.php?action=query&format=json&prop=pageimages&titles={page_title}&pithumbsize=500"
+    page_response = requests.get(page_url).json()
+
+    # extract the image URL from the page information
+    pages = page_response['query']['pages']
     page_id = next(iter(pages))
+    if 'thumbnail' not in pages[page_id]:
+        print(f"No image found for '{animal_name}'")
+        return None, None
     image_url = pages[page_id]['thumbnail']['source']
+    print(image_url)
 
     # download and crop the image
     response = requests.get(image_url)
+    print(response)
     image = Image.open(BytesIO(response.content))
     image_width, image_height = image.size
     aspect_ratio = image_width / image_height
@@ -49,16 +63,20 @@ def get_animal_image(animal_name):
     thumbnail = image.resize((min(150, image_width), min(150, image_height)))
 
     # save the cropped image
-    file_path = os.path.join(os.getcwd() + "\\images\\", "test_cover.jpg")
+    file_path = os.path.join(os.getcwd() + "\\images\\", animal_name + "_cover.jpg")
     cover.save(file_path)
-    file_path = os.path.join(os.getcwd() + "\\images\\", "test_thumbnail.jpg")
+    file_path = os.path.join(os.getcwd() + "\\images\\", animal_name + "_thumbnail.jpg")
     thumbnail.save(file_path)
 
     return cover, thumbnail
 
 
 if __name__ == "__main__":
+    species = supabase_client.from_("species_view").select("*").limit(10)
+    result = species.execute()
 
-    # example usage
-    animal_name = "lion"
-    cover, thumbnail = get_animal_image(animal_name)
+    for record in result.data:
+
+        # Get thumbnail and cover image
+        animal_name = record.get("common_name") or record.get("genus") + " " + record.get("species")
+        cover, thumbnail = get_animal_image(animal_name)

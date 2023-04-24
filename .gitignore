@@ -21,7 +21,7 @@ eggs/
 lib/
 lib64/
 parts/
-sdist/
+sdist/final scrape function
 var/
 wheels/
 pip-wheel-metadata/
