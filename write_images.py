@@ -53,8 +53,8 @@ def adjust_image(image_url: str) -> Image.Image:
     return thumbnail
 
 
-def get_file_info(filename: str) -> Tuple[str, str, int, int]:
-    """Get file infor for a given wiki image file. Returns url, license."""
+async def get_file_info(filename: str, session) -> Tuple[str, str, int, int]:
+    """Get file info for a given wiki image file. Returns url, license."""
 
     api_url = "https://commons.wikimedia.org/w/api.php"
 
@@ -67,8 +67,8 @@ def get_file_info(filename: str) -> Tuple[str, str, int, int]:
         "iiprop": "url|extmetadata|dimensions"
     }
 
-    response = requests.get(api_url, params=params)
-    data = response.json()
+    async with session.get(api_url, params=params) as response:
+        data = await response.json()
 
     # Extract the relevant information from the JSON response
     page_id = list(data["query"]["pages"].keys())[0]
@@ -82,7 +82,7 @@ def get_file_info(filename: str) -> Tuple[str, str, int, int]:
     return original_url, license, width, height
 
 
-def get_animal_image_url(species_id: int, animal_name: str):
+async def get_animal_image_url(species_id: int, animal_name: str, session):
     """Asynchronously send a request for an animal image to the wiki commons API.
     Limits the results to only images with a creative commons license, and with
     squarish proportions."""
@@ -107,11 +107,14 @@ def get_animal_image_url(species_id: int, animal_name: str):
     headers = {
         'Content-Type': 'application/json;charset=UTF-8'}
     params = urlencode(payload, quote_via=quote)
+
+    # Send the request
     response = requests.get(base_url, params=params, headers=headers)
     response_dict = response.json()
 
     # Get first image that conforms to the requirements
     img_url = None
+    tasks = []
     for i, img_result in enumerate(response_dict["query"]["search"]):
 
         # Check if image is a jpg
@@ -120,7 +123,12 @@ def get_animal_image_url(species_id: int, animal_name: str):
             continue
 
         # Check if image has a CC license and squarish proportions
-        temp_url, license, width, height = get_file_info(title)
+        task = asyncio.create_task(get_file_info(title, session))
+        tasks.append(task)
+
+    results = await asyncio.gather(*tasks)
+    for i, result in enumerate(results):
+        temp_url, license, width, height = result
         if not "CC" in license and not "Public Domain" in license:
             continue
         if abs(width - height) > width * 0.4:
@@ -168,22 +176,25 @@ def get_animal_image_url(species_id: int, animal_name: str):
         return
 
 
-def main():
+async def main():
     """Main function."""
 
     # TODO: Get species by index, if not exist, continue
-    species = supabase_client.from_("species_view").select("species_id", "common_name", "genus", "species").range(30, 50)
+    species = supabase_client.from_("species_view").select("species_id", "common_name", "genus", "species").range(0, 70)
     result = species.execute()
 
     tasks = []
-    for record in result.data:
+    async with aiohttp.ClientSession() as session:
+        for record in result.data:
 
-        # Get thumbnail and cover image
-        binomial = record.get("genus") + " " + record.get("species")
-        animal_name = record.get("common_name") or binomial
-        print('\n', animal_name)
-        url = get_animal_image_url(record.get("species_id"), animal_name)
+            # Get thumbnail and cover image
+            binomial = record.get("genus") + " " + record.get("species")
+            animal_name = record.get("common_name") or binomial
+            print('\n', animal_name)
+            task = asyncio.create_task(get_animal_image_url(record.get("species_id"), animal_name, session))
+            tasks.append(task)
 
+        await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
