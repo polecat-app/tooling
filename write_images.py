@@ -7,6 +7,7 @@ from urllib.parse import urlencode, quote
 
 import aiohttp
 from bs4 import BeautifulSoup
+from storage3.utils import StorageException
 from supabase import create_client
 from dotenv import load_dotenv
 import requests
@@ -19,12 +20,12 @@ load_dotenv()
 supabase_client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
 
-def adjust_image(image_url: str) -> Tuple[Image, Image]:
+def adjust_image(image_url: str) -> Image.Image:
     """Adjust image at given url to specified sizes."""
 
     # download the image
     r = request.urlopen(image_url)
-    image = Image.open(r)
+    image: Image.Image = Image.open(r)
     image_width, image_height = image.size
     aspect_ratio = image_width / image_height
     target_aspect_ratio = 1
@@ -46,10 +47,10 @@ def adjust_image(image_url: str) -> Tuple[Image, Image]:
     # Define large image and thumbnail
     image = image.crop((x0, y0, x0 + crop_width, y0 + crop_height))
     image_width, image_height = image.size
-    cover = image.resize((min(800, image_width), min(800, image_height)))
+    # cover = image.resize((min(800, image_width), min(800, image_height)))
     thumbnail = image.resize((min(150, image_width), min(150, image_height)))
 
-    return cover, thumbnail
+    return thumbnail
 
 
 def get_file_info(filename: str) -> Tuple[str, str, int, int]:
@@ -96,7 +97,6 @@ def get_animal_image_url(animal_name: str):
         'prop': 'imageinfo',
         'srnamespace': '6',
         'format': 'json',
-        # 'iiprop': 'timestamp|user|userid|comment|canonicaltitle|url|size|dimensions|sha1|mime|thumbmime|mediatype|bitdepth|extmetadata'
     }
     headers = {
         'Content-Type': 'application/json;charset=UTF-8'}
@@ -104,15 +104,25 @@ def get_animal_image_url(animal_name: str):
     response = requests.get(base_url, params=params, headers=headers)
     response_dict = response.json()
 
-    # Get the first image with a CC license and squarish proportions
+    # Get first image that conforms to the requirements
     img_url = None
-    for img_result in response_dict["query"]["search"]:
+    len_results = len(response_dict["query"]["search"])
+    for i, img_result in enumerate(response_dict["query"]["search"]):
+
+        # Check if image is a jpg
         title = img_result["title"]
         if not title.startswith("File:") or not "jpg" in title:
             continue
+
+        # Check if image has a CC license and squarish proportions
         temp_url, license, width, height = get_file_info(title)
         if not "CC" in license and not "Public Domain" in license:
             continue
+        if abs(width - height) > width * 0.4:
+            print('not square', width, height)
+            continue
+
+        # If so, save the image url and break the loop
         img_url = temp_url
         print("url", img_url, license, width, height)
         break
@@ -121,13 +131,20 @@ def get_animal_image_url(animal_name: str):
         return None
 
     # Adjust the image to the desired sizes
-    cover, thumbnail = adjust_image(img_url)
+    thumbnail = adjust_image(img_url)
 
-    # save the cropped image
-    file_path = os.path.join(os.getcwd() + "\\images\\", animal_name + "_cover.jpg")
-    cover.save(file_path)
-    file_path = os.path.join(os.getcwd() + "\\images\\", animal_name + "_thumbnail.jpg")
-    thumbnail.save(file_path)
+    # Upload the image file
+    bytestream = BytesIO()
+    thumbnail.save(bytestream, format='JPEG')
+    bucket = supabase_client.storage.from_("animal-images")
+    try:
+        file_type = "image/jpeg"
+        response = bucket.upload(f"thumbnail/{animal_name}.jpg", bytestream.getvalue(),
+                                 {"content-type": file_type})
+        print("Image uploaded successfully!")
+    except StorageException:
+        print("File already exists")
+    bytestream.close()
 
     return img_url
 
@@ -143,8 +160,8 @@ def main():
         # Get thumbnail and cover image
         binomial = record.get("genus") + " " + record.get("species")
         animal_name = record.get("common_name") or binomial
+        print('\n', animal_name)
         url = get_animal_image_url(animal_name)
-        print(url)
 
 
 if __name__ == "__main__":
