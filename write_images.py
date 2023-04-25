@@ -82,10 +82,16 @@ def get_file_info(filename: str) -> Tuple[str, str, int, int]:
     return original_url, license, width, height
 
 
-def get_animal_image_url(animal_name: str):
+def get_animal_image_url(species_id: int, animal_name: str):
     """Asynchronously send a request for an animal image to the wiki commons API.
     Limits the results to only images with a creative commons license, and with
     squarish proportions."""
+
+    # Check if image url not already in db
+    existing_url = supabase_client.table("species_image").select("*").eq("species_id", species_id).execute()
+    if existing_url.data:
+        print("Record already exists")
+        return None
 
     # Search query for images with the animal name
     base_url = "https://commons.wikimedia.org/w/api.php"
@@ -106,7 +112,6 @@ def get_animal_image_url(animal_name: str):
 
     # Get first image that conforms to the requirements
     img_url = None
-    len_results = len(response_dict["query"]["search"])
     for i, img_result in enumerate(response_dict["query"]["search"]):
 
         # Check if image is a jpg
@@ -119,15 +124,21 @@ def get_animal_image_url(animal_name: str):
         if not "CC" in license and not "Public Domain" in license:
             continue
         if abs(width - height) > width * 0.4:
-            print('not square', width, height)
             continue
 
         # If so, save the image url and break the loop
         img_url = temp_url
-        print("url", img_url, license, width, height)
+        print("found url:", img_url, license, width, height)
         break
 
+    # If no image found, save nulls on new record
     if not img_url:
+        supabase_client.table("species_image").upsert({
+            "species_id": species_id,
+            "cover_url": None,
+            "thumbnail_name": None,
+        }).execute()
+        print("No url found, empty record added")
         return None
 
     # Adjust the image to the desired sizes
@@ -138,20 +149,30 @@ def get_animal_image_url(animal_name: str):
     thumbnail.save(bytestream, format='JPEG')
     bucket = supabase_client.storage.from_("animal-images")
     try:
+        image_path = f"/thumbnail/{animal_name}.jpg"
         file_type = "image/jpeg"
-        response = bucket.upload(f"thumbnail/{animal_name}.jpg", bytestream.getvalue(),
+        response = bucket.upload(image_path, bytestream.getvalue(),
                                  {"content-type": file_type})
-        print("Image uploaded successfully!")
+        print("Image uploaded")
+        supabase_client.table("species_image").insert({
+            "species_id": species_id,
+            "cover_url": img_url,
+            "thumbnail_name": image_path,
+        }).execute()
+        print("Record added")
+        return img_url
     except StorageException:
-        print("File already exists")
-    bytestream.close()
-
-    return img_url
+        print("Image already exists")
+    finally:
+        bytestream.close()
+        return
 
 
 def main():
     """Main function."""
-    species = supabase_client.from_("species_view").select("*").limit(20)
+
+    # TODO: Get species by index, if not exist, continue
+    species = supabase_client.from_("species_view").select("species_id", "common_name", "genus", "species").range(30, 50)
     result = species.execute()
 
     tasks = []
@@ -161,7 +182,7 @@ def main():
         binomial = record.get("genus") + " " + record.get("species")
         animal_name = record.get("common_name") or binomial
         print('\n', animal_name)
-        url = get_animal_image_url(animal_name)
+        url = get_animal_image_url(record.get("species_id"), animal_name)
 
 
 if __name__ == "__main__":
