@@ -179,15 +179,21 @@ async def get_animal_image_url(species_id: int, animal_name: str, session):
 async def main():
     """Main function."""
 
-    # TODO: Get species by index, if not exist, continue
-    species = supabase_client.from_("species_view").select("species_id", "common_name", "genus", "species").range(0, 70)
-    result = species.execute()
-
     tasks = []
     async with aiohttp.ClientSession() as session:
-        for record in result.data:
+        for i in range(0, 10):
+            species = supabase_client.from_("species_view").select(
+                "species_id",
+                "common_name",
+                "genus",
+                "species"
+            ).eq("species_id", i)
+            result = species.execute()
+            if not result.data:
+                continue
 
             # Get thumbnail and cover image
+            record = result.data[0]
             binomial = record.get("genus") + " " + record.get("species")
             animal_name = record.get("common_name") or binomial
             print('\n', animal_name)
