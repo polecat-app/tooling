@@ -57,31 +57,39 @@ def adjust_image(image_url: str) -> Tuple[Image, Image]:
     return cover, thumbnail
 
 
-def get_link_to_original_img(url: str):
-    """Get the original image on the page."""
+def get_file_info(filename: str):
+    """Get file infor for a given wiki image file. Returns url, license."""
 
-    # Send an HTTP request to the URL and get the HTML content
-    response = requests.get(url)
-    html_content = response.content
+    api_url = "https://commons.wikimedia.org/w/api.php"
 
-    # Parse the HTML content using BeautifulSoup
-    soup = BeautifulSoup(html_content, 'html.parser')
+    # Prepare the query parameters for the API request
+    params = {
+        "action": "query",
+        "format": "json",
+        "prop": "imageinfo",
+        "titles": filename,
+        "iiprop": "url|extmetadata"
+    }
 
-    # Find the first HTML link with the name "Original file"
-    link_tag = soup.find('a', text='Original file')
-    if not link_tag:
-        return None
+    response = requests.get(api_url, params=params)
+    data = response.json()
 
-    # Extract the URL of the link
-    link_url = link_tag['href']
+    # Extract the relevant information from the JSON response
+    page_id = list(data["query"]["pages"].keys())[0]
+    image_info = data["query"]["pages"][page_id]["imageinfo"][0]
 
-    return link_url
+    original_url = image_info["url"]
+    license = image_info["extmetadata"]["LicenseShortName"]["value"]
+
+    return original_url, license
 
 
 async def get_animal_image_url_async(animal_name):
     """Asynchronously send a request for an animal image to the wiki commons API.
     Limits the results to only images with a creative commons license, and with
     squarish proportions."""
+
+    print(animal_name)
 
 
     #
@@ -94,17 +102,14 @@ async def get_animal_image_url_async(animal_name):
     # print(url)
     #
 
-
+    # Search query for images with the animal name
     base_url = "https://commons.wikimedia.org/w/api.php"
     payload = {
         'action': 'query',
         'list': 'search',
         'srsearch': animal_name,
         'srlimit': '10',
-        # 'generator': 'search',
         'prop': 'imageinfo',
-        # 'redirects': '1',
-        # 'gsrsearch': animal_name,
         'srnamespace': '6',
         'format': 'json',
         'iiprop': 'timestamp|user|userid|comment|canonicaltitle|url|size|dimensions|sha1|mime|thumbmime|mediatype|bitdepth|extmetadata'
@@ -113,21 +118,16 @@ async def get_animal_image_url_async(animal_name):
         'Content-Type': 'application/json;charset=UTF-8'}
     params = urlencode(payload, quote_via=quote)
     response = requests.get(base_url, params=params, headers=headers)
-    print(animal_name)
     response_dict = response.json()
-    print(response_dict)
+
+    # Get the first image with a CC license and squarish proportions
     img_url = None
     for img_result in response_dict["query"]["search"]:
-        img_url = get_link_to_original_img("https://wikipedia.org/wiki/" + img_result["title"])
-        print(img_url)
-        # if not "image/jpeg" == page["imageinfo"][0]["mime"]:
-        #     continue
-        # license = page["imageinfo"][0]["extmetadata"]["LicenseShortName"]["value"]
-        # if not "CC" in license and not "Public Domain" in license:
-        #     continue
-        # img_url = page["imageinfo"][0]["url"]
-        # print(img_url)
-        # break
+        img_url, license = get_file_info(img_result["title"])
+        if not "CC" in license and not "Public Domain" in license:
+            continue
+        print("url", img_url)
+        break
 
     if not img_url:
         return None
