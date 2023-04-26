@@ -82,16 +82,20 @@ async def get_file_info(filename: str, session) -> Tuple[str, str, int, int]:
     return original_url, license, width, height
 
 
-async def get_animal_image_url(species_id: int, animal_name: str, session):
+async def get_animal_image_url(species_id: int, animal_name: str, session, fill_null=False):
     """Asynchronously send a request for an animal image to the wiki commons API.
     Limits the results to only images with a creative commons license, and with
     squarish proportions."""
 
     # Check if image url not already in db
-    existing_url = supabase_client.table("species_image").select("*").eq("species_id", species_id).execute()
-    if existing_url.data:
-        print("Record already exists")
-        return None
+    existing_url = supabase_client.table("species_images").select("*").eq("species_id", species_id).execute()
+    record = existing_url.data[0] if existing_url.data else None
+    if record:
+        if fill_null and None in [record.get("thumbnail_name"), record.get("cover_url")]:
+            print(f"{species_id}: Try to fill record with null values")
+        else:
+            print(f"{species_id}: Record already exists")
+            return None
 
     # Search query for images with the animal name
     base_url = "https://commons.wikimedia.org/w/api.php"
@@ -136,17 +140,17 @@ async def get_animal_image_url(species_id: int, animal_name: str, session):
 
         # If so, save the image url and break the loop
         img_url = temp_url
-        print("found url:", img_url, license, width, height)
+        print(f"{species_id}: found url:", img_url, license, width, height)
         break
 
     # If no image found, save nulls on new record
     if not img_url:
-        supabase_client.table("species_image").upsert({
+        supabase_client.table("species_images").upsert({
             "species_id": species_id,
             "cover_url": None,
             "thumbnail_name": None,
         }).execute()
-        print("No url found, empty record added")
+        print(f"{species_id}: No url found, empty record added")
         return None
 
     # Adjust the image to the desired sizes
@@ -161,16 +165,16 @@ async def get_animal_image_url(species_id: int, animal_name: str, session):
         file_type = "image/jpeg"
         response = bucket.upload(image_path, bytestream.getvalue(),
                                  {"content-type": file_type})
-        print("Image uploaded")
-        supabase_client.table("species_image").insert({
+        print(f"{species_id}: Image uploaded")
+        supabase_client.table("species_images").upsert({
             "species_id": species_id,
             "cover_url": img_url,
             "thumbnail_name": image_path,
         }).execute()
-        print("Record added")
+        print(f"{species_id}: Record added")
         return img_url
     except StorageException:
-        print("Image already exists")
+        print(f"{species_id}: Image already exists")
     finally:
         bytestream.close()
         return
@@ -196,8 +200,9 @@ async def main():
             record = result.data[0]
             binomial = record.get("genus") + " " + record.get("species")
             animal_name = record.get("common_name") or binomial
-            print('\n', animal_name)
-            task = asyncio.create_task(get_animal_image_url(record.get("species_id"), animal_name, session))
+            species_id = record.get("species_id")
+            print('\n', species_id, ": starting task for ", animal_name)
+            task = asyncio.create_task(get_animal_image_url(species_id, animal_name, session, fill_null=True))
             tasks.append(task)
 
         await asyncio.gather(*tasks)
