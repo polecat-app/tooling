@@ -1,12 +1,12 @@
 import asyncio
 import os
+import time
 from io import BytesIO
 from typing import Tuple
 from urllib import request
 from urllib.parse import urlencode, quote
 
 import aiohttp
-from bs4 import BeautifulSoup
 from storage3.utils import StorageException
 from supabase import create_client
 from dotenv import load_dotenv
@@ -126,13 +126,12 @@ async def get_animal_image_url(species_id: int, animal_name: str, session, fill_
         if not title.startswith("File:") or not "jpg" in title:
             continue
 
-        # Check if image has a CC license and squarish proportions
-        task = asyncio.create_task(get_file_info(title, session))
-        tasks.append(task)
+        # Get image info
+        print(f"{species_id}: Sending requests for file info")
+        temp_url, license, width, height = await get_file_info(title, session)
+        print(f"{species_id}: Got requests for file info:")
 
-    results = await asyncio.gather(*tasks)
-    for i, result in enumerate(results):
-        temp_url, license, width, height = result
+        # Check if image has a CC license and squarish proportions
         if not "CC" in license and not "Public Domain" in license:
             continue
         if abs(width - height) > width * 0.4:
@@ -180,12 +179,12 @@ async def get_animal_image_url(species_id: int, animal_name: str, session, fill_
         return
 
 
-async def main():
+async def main(range_start: int, range_end: int):
     """Main function."""
 
     tasks = []
     async with aiohttp.ClientSession() as session:
-        for i in range(0, 10):
+        for i in range(range_start, range_end):
             species = supabase_client.from_("species_view").select(
                 "species_id",
                 "common_name",
@@ -207,5 +206,9 @@ async def main():
 
         await asyncio.gather(*tasks)
 
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    start = time.time()
+    asyncio.run(main(0, 70))
+    print("TIME", start - time.time())
+
