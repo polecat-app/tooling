@@ -7,7 +7,7 @@ import openai
 import tiktoken
 from dotenv import load_dotenv
 from supabase import create_client, Client
-
+import aiohttp
 
 load_dotenv()
 
@@ -18,55 +18,94 @@ supabase_key = os.getenv('SUPABASE_KEY')
 
 MAX_RETURN_WORD_COUNT = 100
 
+import aiohttp
 
-def get_descriptive_text_from_wiki(animal_searchname, max_words, min_words, language='en' ):
-    # Set the language for the wikipedia library
-    wikipedia.set_lang(language)
+async def get_descriptive_text_from_wiki_async(animal_searchname, max_words=500, min_words = 100, language='en'):
+    async with aiohttp.ClientSession() as session:
+        # Search for the query
+        search_url = f'https://{language}.wikipedia.org/w/api.php'
+        search_params = {
+            'action': 'query',
+            'list': 'search',
+            'format': 'json',
+            'srsearch': animal_searchname
+        }
 
-    # Search for the query
-    search_results = wikipedia.search(animal_searchname)
+        search_results = []
 
-    # Check if there are any results
-    if not search_results:
-        print(f"No results found for '{animal_searchname}' in '{language}' Wikipedia.")
-        return None
+        async def connect_to_wiki(counter):
+            try:
+                async with session.get(search_url, params=search_params) as search_response:
+                    search_results = await search_response.json()
+                    search_results = search_results['query']['search']
+                    return search_results
+            except Exception as e:
+                counter += 1
+                print(f"Retrying to connect to wiki, error: {e}")
+                if counter > 5:
+                    return
+                await asyncio.sleep(2)
+                connect_to_wiki(counter)
 
-    # Fetch the most likely page using wikipediaapi
-    wiki = wikipediaapi.Wikipedia(language)
-    most_likely_page_title = search_results[0]
-    page = wiki.page(most_likely_page_title)
+        search_results = await connect_to_wiki(0)
 
-    # Check if the page exists
-    if not page.exists():
-        print(f"The page '{most_likely_page_title}' does not exist in '{language}' Wikipedia.")
-        return None
+        # async with session.get(search_url, params=search_params) as search_response:
+        #     search_results = await search_response.json()
+        #     search_results = search_results['query']['search']
 
-    # Extract the text from the page
-    summary = page.summary
-    total_text = summary
-   
-    # Check if there is a 'description' header in the page
-    sections = page.sections
-    for section in sections:
-        if section.title.lower() == 'description':
-            description_text = section.text
-            total_text += '\n' + description_text
-            break
-    
-    words = total_text.split()
-    word_count = len(words)
+        # Check if there are any results
+        if not search_results:
+            print(f"No results found for '{animal_searchname}' in '{language}' Wikipedia.")
+            return None, None
 
-    if word_count < min_words:
-        total_text = page.text.replace('\n', ' ').split('== References ==')[0].strip()
-        words = total_text.split()
+        # Fetch the most likely page
+        most_likely_page_title = search_results[0]['title']
+
+        # Get the page content
+        content_url = f'https://{language}.wikipedia.org/w/api.php'
+        content_params = {
+            'action': 'query',
+            'prop': 'extracts',
+            'format': 'json',
+            'exsectionformat': 'wiki',
+            'explaintext': 1,
+            'titles': most_likely_page_title
+        }
+        async with session.get(content_url, params=content_params) as content_response:
+            content_results = await content_response.json()
+            page_id = list(content_results['query']['pages'].keys())[0]
+            full_text = content_results['query']['pages'][page_id]['extract']
+
+        # Extract summary and description sections
+        sections = full_text.split('\n')
+        summary = sections[0]
+        description = ''
+
+        for section in sections[1:]:
+            if section.startswith('Description'):
+                description = section
+                break
+
+        # Combine summary and description, and limit to max_words
+        combined_text = summary + ' ' + description
+        words = combined_text.split()
         word_count = len(words)
 
-    # Limit the text to x words
-    if word_count > max_words:
-        total_text = ' '.join(words[:max_words]) + '...'
+        # if the summary + description are less than min_words, 
+        # get all the other text except references and fill to min_words. 
 
-    return total_text, word_count
+        if word_count < min_words:
+            total_text = full_text.split('== References ==')[0].strip()
+            words = total_text.split()
+            total_text = ' '.join(words[:min_words])
+            word_count = len(words)
 
+        # if the word_count is larger than min_words, then get the summary + description
+        # and limit to 500 words. 
+        else:
+            total_text = ' '.join(words[:min(len(words), max_words)]) + '...'
+
+        return total_text, word_count
 
 def num_tokens_from_messages(messages, model="gpt-3.5-turbo-0301"):
   """Returns the number of tokens used by a list of messages."""
@@ -89,16 +128,30 @@ def num_tokens_from_messages(messages, model="gpt-3.5-turbo-0301"):
   See https://github.com/openai/openai-python/blob/main/chatml.md for information on how messages are converted to tokens.""")
 
 
-def get_records_from_supabase_species(client, from_species_id, to_species_id):
+def get_supabase_species(client, species_id):
     """Get records from the species table in the supabase database."""
 
-    # Define the name of the view and the ID of the record to retrieve
-    view_name = 'species_view'
+    species_view = 'species_view'
 
     # Retrieve the record from the view
-    response = client.from_(view_name).select('*').gte('species_id', from_species_id).lt('species_id', to_species_id).execute()
-    
+    response = client.from_(species_view).select('*').eq('species_id', species_id).execute()
     return response
+
+def species_description_exists(client, check_id):
+    """Check is a species already has a description."""
+   
+    view_name = 'species_descriptions'
+
+    # Retrieve the record from the view
+    check = client.from_(view_name).select('species_id').eq('species_id', check_id).execute()
+    return bool(check.data)
+
+def check_missing_species_ids(client, start_id, end_id):
+    """Check what species_id don't have a description yet."""
+    result = client.rpc("__find_missing_species_descriptions", {'start_id': start_id, 'end_id': end_id }).execute()
+    ids = [record['missing_id'] for record in result.data]
+    success = len(ids) == 0
+    return success, ids
 
 
 async def coroutine_for_getting_and_writing_description(species: dict, client: Client):
@@ -106,27 +159,53 @@ async def coroutine_for_getting_and_writing_description(species: dict, client: C
 
     # Determine input prompt
     latin_name = species['genus'] + " " + species['species']
-    wiki_text, in_word_count = get_descriptive_text_from_wiki(latin_name, 500, 100)
 
-    # Set up the OpenAI API client
-    openai.api_key = api_key
-    return_word_count = min(MAX_RETURN_WORD_COUNT, in_word_count)
-    params = {
-        'model': 'gpt-3.5-turbo',
-        'messages' : [
-            {"role": "system", "content": f"You are an {latin_name} talking about your life"},
-            {"role": "user", "content": f'Act as if you are an {latin_name}. Write a description (max {return_word_count} words) of your life based on the following text:\n\n "{wiki_text}"\n.'}
-        ],
-        'temperature': 0.2,
-        'max_tokens' : 250,
-        'presence_penalty' : 1.0,
-        'frequency_penalty' : 1.0
-    }
+    common_name = species['common_name']
+    if not bool(common_name):
+        common_name = latin_name
 
-    # Asynchronously generate description
-    response = await openai.ChatCompletion.acreate(**params)
-    description = response.choices[0].message.content
-    print("generated description for: ", latin_name)
+    species_id = species['species_id']
+    wiki_text, in_word_count = await get_descriptive_text_from_wiki_async(latin_name)
+    
+    description = None
+
+    if wiki_text: 
+        # Set up the OpenAI API client
+        openai.api_key = api_key
+        return_word_count = min(MAX_RETURN_WORD_COUNT, in_word_count)
+        params = {
+            'model': 'gpt-3.5-turbo',
+            'messages' : [
+                {"role": "system", "content": f"You are an {common_name} talking about your life"},
+                {"role": "user", "content": f'Act as if you are an {common_name}. Write a description (max {return_word_count} words) of your life based on the following text:\n\n "{wiki_text}"\n.'}
+            ],
+            'temperature': 0.2,
+            'max_tokens' : 250,
+            'presence_penalty' : 1.0,
+            'frequency_penalty' : 1.0
+        }
+
+        # Asynchronously generate description
+        max_retries = 10
+        retry_delay = 0.5
+
+        for i in range(max_retries):
+            try:
+                response = await openai.ChatCompletion.acreate(**params)
+                break  # exit the loop if the request succeeds
+            except:
+                await asyncio.sleep(retry_delay * (i+1))  # sleep for longer each time
+        else:
+            response = None  # all retries failed
+            print(f"no response from openai for id {species_id}: {common_name}")
+            return
+
+        if response:
+            description = response.choices[0].message.content
+            print(f"generated description for id {species_id}: {common_name}")
+
+    
+    if not wiki_text: print(f"no wiki found for id  {species_id} : {common_name}")
 
     # Write to db
     record = {
@@ -141,24 +220,41 @@ async def coroutine_for_getting_and_writing_description(species: dict, client: C
 async def main():
 
     # Define the range of species to generate descriptions for
-    start_id = 3
-    end_id = 20
+    start_id = 4000
+    end_id = 5000
     
     # Set up a Supabase client instance
     client = create_client(supabase_url, supabase_key)
 
-    species_records = get_records_from_supabase_species(client, start_id, end_id).data
-
-    # Define the tasks to run asynchronously
     tasks = []
-    for species in species_records:
+
+    
+    for species_id in range(start_id, end_id):
+        if species_description_exists(client, species_id):
+            print(f'skipped id {species_id}, description exists')
+            continue
+    
+        record = get_supabase_species(client, species_id).data
+        if not record: 
+            continue
+        record = record[0]
+
+        print(f"making coroutine for id: {species_id}")
+        
         tasks.append(
-            coroutine_for_getting_and_writing_description(species, client)
+            coroutine_for_getting_and_writing_description(record, client)
         )
 
-    # Asynchronously run all coroutines
+    # Asynchronously run all coroutinesff
     await asyncio.gather(*tasks)
 
+    check = True
+    if check: 
+        if check_missing_species_ids(client, start_id,end_id)[0]: 
+            print(f'success! All descriptions between species id {start_id} and {end_id} are on the database!')
+        else:
+            print(f'Descriptions with species id {check_missing_species_ids(client, start_id,end_id)[1]} are not yet generated!')
+        
 
 if __name__ == "__main__":
     asyncio.run(main())
