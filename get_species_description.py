@@ -109,7 +109,7 @@ async def get_descriptive_text_from_wiki_async(animal_searchname, max_words=500,
         # get all the other text and take max_words
 
         if word_count < min_words:
-            gpt_input_text = " ".join(section_dict.values)
+            gpt_input_text = " ".join(section_dict.values())
             words = gpt_input_text.split()
             word_count = len(words)
             result = " ".join(words[: min(word_count, max_words)])
@@ -239,10 +239,12 @@ async def coroutine_for_getting_and_writing_description(species: dict, client: C
 async def main():
 
     # Define the range of species to generate descriptions for
-    #10000 to 100000
-    start_id = 13004
-    end_id = 13010
-    step_size = 500
+    #2000 to 5000 might have taken taxonomy before description
+
+
+    start_id = 10000
+    end_id = 100000
+    step_size = 200
 
     def sequence_ids(start_id, end_id ,step_size):
         sequences = []
