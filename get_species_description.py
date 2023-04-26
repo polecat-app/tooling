@@ -163,7 +163,16 @@ def species_description_exists(client, check_id):
 
     # Retrieve the record from the view
     check = client.from_(view_name).select('species_id').eq('species_id', check_id).execute()
-    return bool(check.data)
+    check_data = bool(check.data)
+    exists = check_data 
+
+    if check_data:
+        check_common_name = get_supabase_species(client, check_id).data  # TODO: TEMPORARY !!!
+        check_common_name = bool(check_common_name[0].get("common_name"))
+        if not check_common_name:
+            print("no common name, will repeat query")
+            exists = False
+    return exists
 
 def check_missing_species_ids(client, start_id, end_id):
     """Check what species_id don't have a description yet."""
@@ -177,7 +186,9 @@ async def coroutine_for_getting_and_writing_description(species: dict, client: C
     """Get the description for a species and write it to the database."""
 
     # Determine input prompt
-    latin_name = species['genus'] + " " + species['species']
+    latin_name = (species['genus'] or "") + " " + (species['species'] or "")
+
+    print(latin_name)
 
     common_name = species['common_name']
     if not bool(common_name):
@@ -232,7 +243,7 @@ async def coroutine_for_getting_and_writing_description(species: dict, client: C
         'species_id': species["species_id"],
         'description': description
     }
-    data = client.table('species_descriptions').insert(record).execute()
+    data = client.table('species_descriptions').upsert(record).execute()
     print("wrote into db: ", latin_name)
 
 
@@ -242,8 +253,8 @@ async def main():
     #2000 to 5000 might have taken taxonomy before description
 
 
-    start_id = 10000
-    end_id = 100000
+    start_id = 90000
+    end_id = 96000
     step_size = 200
 
     def sequence_ids(start_id, end_id ,step_size):
@@ -280,7 +291,7 @@ async def main():
         # Asynchronously run all coroutinesff
         await asyncio.gather(*tasks)
 
-        check = True
+        check = False
         if check: 
             if check_missing_species_ids(client, start_id,end_id)[0]: 
                 print(f'success! All descriptions between species id {start_id} and {end_id} are on the database!')
