@@ -1,5 +1,5 @@
 import asyncio
-
+import re
 import wikipedia
 import wikipediaapi
 import os
@@ -77,35 +77,54 @@ async def get_descriptive_text_from_wiki_async(animal_searchname, max_words=500,
             full_text = content_results['query']['pages'][page_id]['extract']
 
         # Extract summary and description sections
-        sections = full_text.split('\n')
-        summary = sections[0]
-        description = ''
-
-        for section in sections[1:]:
-            if section.startswith('Description'):
-                description = section
+        # get a list of the different secitons
+        sections = full_text.split('\n\n\n')
+        section_dict = {}
+        # split each section in a title and a body and add to the dict
+        pattern = '==\s*(.*?)\s*=='
+        section_dict['Summary'] = sections[0]
+        exclude_titles = ['== External links ==', '== References ==']
+        
+        for section in sections[1:]: 
+            match = re.search(pattern, section)
+            if match:
+                key = match.group(0)
+                if key not in exclude_titles: 
+                    content = section.split(key,1)
+                    section_dict[key] = ''.join(content)
+        
+        
+        description = ""
+        # Combine summary and description
+        for key, item in section_dict.items():
+            if "description" in key.lower():
+                description = item
                 break
-
-        # Combine summary and description, and limit to max_words
-        combined_text = summary + ' ' + description
-        words = combined_text.split()
+        
+        gpt_input_text = section_dict['Summary'] + " " + description
+        words = gpt_input_text.split()
         word_count = len(words)
 
         # if the summary + description are less than min_words, 
-        # get all the other text except references and fill to min_words. 
+        # get all the other text and take max_words
 
         if word_count < min_words:
-            total_text = full_text.split('== References ==')[0].strip()
-            words = total_text.split()
-            total_text = ' '.join(words[:min_words])
+            gpt_input_text = " ".join(section_dict.values())
+            words = gpt_input_text.split()
             word_count = len(words)
+            result = " ".join(words[: min(word_count, max_words)])
+            word_count = min(word_count, max_words)
 
-        # if the word_count is larger than min_words, then get the summary + description
-        # and limit to 500 words. 
+        # Description and summary are good length
+        elif word_count < max_words:
+            result = " ".join(words)
+
+        # Description and summary are too long
         else:
-            total_text = ' '.join(words[:min(len(words), max_words)]) + '...'
+            result = " ".join(words[:max_words])
+            word_count = max_words
 
-        return total_text, word_count
+        return result, word_count
 
 def num_tokens_from_messages(messages, model="gpt-3.5-turbo-0301"):
   """Returns the number of tokens used by a list of messages."""
@@ -144,7 +163,16 @@ def species_description_exists(client, check_id):
 
     # Retrieve the record from the view
     check = client.from_(view_name).select('species_id').eq('species_id', check_id).execute()
-    return bool(check.data)
+    check_data = bool(check.data)
+    exists = check_data 
+
+    if check_data:
+        check_common_name = get_supabase_species(client, check_id).data  # TODO: TEMPORARY !!!
+        check_common_name = bool(check_common_name[0].get("common_name"))
+        if not check_common_name:
+            print("no common name, will repeat query")
+            exists = False
+    return exists
 
 def check_missing_species_ids(client, start_id, end_id):
     """Check what species_id don't have a description yet."""
@@ -158,7 +186,9 @@ async def coroutine_for_getting_and_writing_description(species: dict, client: C
     """Get the description for a species and write it to the database."""
 
     # Determine input prompt
-    latin_name = species['genus'] + " " + species['species']
+    latin_name = (species['genus'] or "") + " " + (species['species'] or "")
+
+    print(latin_name)
 
     common_name = species['common_name']
     if not bool(common_name):
@@ -213,48 +243,61 @@ async def coroutine_for_getting_and_writing_description(species: dict, client: C
         'species_id': species["species_id"],
         'description': description
     }
-    data = client.table('species_descriptions').insert(record).execute()
+    data = client.table('species_descriptions').upsert(record).execute()
     print("wrote into db: ", latin_name)
 
 
 async def main():
 
     # Define the range of species to generate descriptions for
-    start_id = 4000
-    end_id = 5000
-    
-    # Set up a Supabase client instance
-    client = create_client(supabase_url, supabase_key)
+    #2000 to 5000 might have taken taxonomy before description
 
-    tasks = []
 
-    
-    for species_id in range(start_id, end_id):
-        if species_description_exists(client, species_id):
-            print(f'skipped id {species_id}, description exists')
-            continue
-    
-        record = get_supabase_species(client, species_id).data
-        if not record: 
-            continue
-        record = record[0]
+    start_id = 90000
+    end_id = 96000
+    step_size = 200
 
-        print(f"making coroutine for id: {species_id}")
+    def sequence_ids(start_id, end_id ,step_size):
+        sequences = []
         
-        tasks.append(
-            coroutine_for_getting_and_writing_description(record, client)
-        )
+        for i in range(start_id, end_id, step_size):
+            current_end_id = min(i + step_size, end_id)
+            sequences.append((i, current_end_id))
+        return sequences
+    
+    for start_sequence_id, end_sequence_id in sequence_ids(start_id, end_id, step_size):
 
-    # Asynchronously run all coroutinesff
-    await asyncio.gather(*tasks)
+        # Set up a Supabase client instance
+        client = create_client(supabase_url, supabase_key)
 
-    check = True
-    if check: 
-        if check_missing_species_ids(client, start_id,end_id)[0]: 
-            print(f'success! All descriptions between species id {start_id} and {end_id} are on the database!')
-        else:
-            print(f'Descriptions with species id {check_missing_species_ids(client, start_id,end_id)[1]} are not yet generated!')
+        tasks = []
+
+        for species_id in range(start_sequence_id, end_sequence_id):
+            if species_description_exists(client, species_id):
+                print(f'skipped id {species_id}, description exists')
+                continue
         
+            record = get_supabase_species(client, species_id).data
+            if not record: 
+                continue
+            record = record[0]
+
+            print(f"making coroutine for id: {species_id}")
+            
+            tasks.append(
+                coroutine_for_getting_and_writing_description(record, client)
+            )
+
+        # Asynchronously run all coroutinesff
+        await asyncio.gather(*tasks)
+
+        check = False
+        if check: 
+            if check_missing_species_ids(client, start_id,end_id)[0]: 
+                print(f'success! All descriptions between species id {start_id} and {end_id} are on the database!')
+            else:
+                print(f'Descriptions with species id {check_missing_species_ids(client, start_id,end_id)[1]} are not yet generated!')
+            
 
 if __name__ == "__main__":
     asyncio.run(main())
