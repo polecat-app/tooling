@@ -2,16 +2,17 @@ import asyncio
 import os
 import time
 from io import BytesIO
-from typing import Tuple
-from urllib import request
-from urllib.parse import urlencode, quote
+from random import random
+from typing import Tuple, Optional
 
 import aiohttp
+from PIL import Image
+from PIL import ImageFile
+from dotenv import load_dotenv
 from storage3.utils import StorageException
 from supabase import create_client
-from dotenv import load_dotenv
-import requests
-from PIL import Image
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 load_dotenv()
@@ -20,12 +21,14 @@ load_dotenv()
 supabase_client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
 
-def adjust_image(image_url: str) -> Image.Image:
+async def adjust_image(image_url: str, session) -> Image.Image:
     """Adjust image at given url to specified sizes."""
 
     # download the image
-    r = request.urlopen(image_url)
-    image: Image.Image = Image.open(r)
+    headers = {"User-Agent": "Thumbnail collection animal app; yannmcken@gmail.com"}
+    async with session.get(image_url, headers=headers) as response:
+        data = await response.read()
+        image = Image.open(BytesIO(data))
     image_width, image_height = image.size
     aspect_ratio = image_width / image_height
     target_aspect_ratio = 1
@@ -53,7 +56,7 @@ def adjust_image(image_url: str) -> Image.Image:
     return thumbnail
 
 
-async def get_file_info(filename: str, session) -> Tuple[str, str, int, int]:
+async def get_file_info(filename: str, session) -> Optional[Tuple[str, str, int, int]]:
     """Get file info for a given wiki image file. Returns url, license."""
 
     api_url = "https://commons.wikimedia.org/w/api.php"
@@ -74,10 +77,13 @@ async def get_file_info(filename: str, session) -> Tuple[str, str, int, int]:
     page_id = list(data["query"]["pages"].keys())[0]
     image_info = data["query"]["pages"][page_id]["imageinfo"][0]
 
-    original_url = image_info["url"]
-    license = image_info["extmetadata"]["LicenseShortName"]["value"]
-    width = image_info["width"]
-    height = image_info["height"]
+    try:
+        original_url = image_info["url"]
+        license = image_info["extmetadata"]["LicenseShortName"]["value"]
+        width = image_info["width"]
+        height = image_info["height"]
+    except KeyError:
+        return None
 
     return original_url, license, width, height
 
@@ -109,16 +115,16 @@ async def get_animal_image_url(species_id: int, animal_name: str, session, fill_
         'format': 'json',
     }
     headers = {
-        'Content-Type': 'application/json;charset=UTF-8'}
-    params = urlencode(payload, quote_via=quote)
+        'Content-Type': 'application/json;charset=UTF-8',
+    }
 
     # Send the request
-    response = requests.get(base_url, params=params, headers=headers)
-    response_dict = response.json()
+    async with session.get(base_url, params=payload, headers=headers) as response:
+        await asyncio.sleep(random())
+        response_dict = await response.json()
 
     # Get first image that conforms to the requirements
     img_url = None
-    tasks = []
     for i, img_result in enumerate(response_dict["query"]["search"]):
 
         # Check if image is a jpg
@@ -128,7 +134,10 @@ async def get_animal_image_url(species_id: int, animal_name: str, session, fill_
 
         # Get image info
         print(f"{species_id}: Sending requests for file info")
-        temp_url, license, width, height = await get_file_info(title, session)
+        file_info = await get_file_info(title, session)
+        if not file_info:
+            continue
+        temp_url, license, width, height = file_info
         print(f"{species_id}: Got requests for file info:")
 
         # Check if image has a CC license and squarish proportions
@@ -153,7 +162,7 @@ async def get_animal_image_url(species_id: int, animal_name: str, session, fill_
         return None
 
     # Adjust the image to the desired sizes
-    thumbnail = adjust_image(img_url)
+    thumbnail = await adjust_image(img_url, session)
 
     # Upload the image file
     bytestream = BytesIO()
@@ -197,7 +206,7 @@ async def main(range_start: int, range_end: int):
 
             # Get thumbnail and cover image
             record = result.data[0]
-            binomial = record.get("genus") + " " + record.get("species")
+            binomial = (record.get("genus") or "") + " " + (record.get("species") or "")
             animal_name = record.get("common_name") or binomial
             species_id = record.get("species_id")
             print('\n', species_id, ": starting task for ", animal_name)
@@ -209,6 +218,9 @@ async def main(range_start: int, range_end: int):
 
 if __name__ == "__main__":
     start = time.time()
-    asyncio.run(main(0, 70))
+    start_range = 90000
+    end_range = 95800
+    step_size = 50
+    for i in range(start_range, end_range, step_size):
+        asyncio.run(main(i, i + step_size))
     print("TIME", start - time.time())
-
