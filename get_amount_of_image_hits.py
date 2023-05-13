@@ -34,7 +34,12 @@ async def get_animal_image_url(species_id: int, animal_name: str, session, fill_
     async with session.get(base_url, params=payload, headers=headers) as response:
         await asyncio.sleep(random())
         response_dict = await response.json()
-        print(animal_name,response_dict["query"]["searchinfo"]["totalhits"])
+        total_hits = response_dict["query"]["searchinfo"]["totalhits"]
+        print(animal_name, total_hits)
+        supabase_client.table("species_popularity").upsert({
+            "species_id": species_id,
+            "score": total_hits,
+        }).execute()
 
 
 async def main(range_start: int, range_end: int):
