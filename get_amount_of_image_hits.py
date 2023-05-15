@@ -22,7 +22,7 @@ async def get_animal_image_url(species_id: int, animal_name: str, session, fill_
     payload = {
         'action': 'query',
         'list': 'search',
-        'srsearch': animal_name,
+        'srsearch': '"' + animal_name + '"',
         'srnamespace': '6',
         'format': 'json',
     }
@@ -32,13 +32,13 @@ async def get_animal_image_url(species_id: int, animal_name: str, session, fill_
 
     # Send the request
     async with session.get(base_url, params=payload, headers=headers) as response:
-        await asyncio.sleep(random())
+        await asyncio.sleep(random() + 0.5)
         response_dict = await response.json()
         total_hits = response_dict["query"]["searchinfo"]["totalhits"]
         print(animal_name, total_hits)
-        supabase_client.table("species_popularity").upsert({
+        supabase_client.table("species_ranking").upsert({
             "species_id": species_id,
-            "score": total_hits,
+            "score_common_name": total_hits,
         }).execute()
 
 
@@ -61,7 +61,7 @@ async def main(range_start: int, range_end: int):
             # Get thumbnail and cover image
             record = result.data[0]
             binomial = (record.get("genus") or "") + " " + (record.get("species") or "")
-            animal_name = binomial
+            animal_name = record.get("common_name") or binomial
             species_id = record.get("species_id")
             print('\n', species_id, ": starting task for ", animal_name)
             task = asyncio.create_task(get_animal_image_url(species_id, animal_name, session, fill_null=True))
@@ -72,8 +72,8 @@ async def main(range_start: int, range_end: int):
 
 if __name__ == "__main__":
     start = time.time()
-    start_range = 0
-    end_range = 100
+    start_range = 90000  # 0 - 28000, 50000 - 51200, 90000 - 96000
+    end_range = 96000
     step_size = 50
     for i in range(start_range, end_range, step_size):
         asyncio.run(main(i, i + step_size))
