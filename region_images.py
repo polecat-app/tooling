@@ -1,6 +1,9 @@
+import ast
+
 from dotenv import load_dotenv
 import os
 import pandas as pd
+import psycopg2
 from supabase import create_client
 from matplotlib import pyplot as plt
 from shapely.geometry import shape
@@ -10,60 +13,57 @@ load_dotenv()
 
 
 def run_query():
-    supabase = create_client(os.getenv("SUPABASE_APP_URL"), os.getenv("SUPABASE_APP_S_KEY"))
 
-    # Fetch all species
-    species_rows = supabase.table('species').select('*').range(18020, 18022).execute().data
+    # create a new connection to supabase
+    conn = psycopg2.connect(
+        dbname=os.getenv("DB"),
+        user=os.getenv("USER"),
+        password=os.getenv("PW"),
+        host=os.getenv("HOST"),
+        port=os.getenv("PORT")
+    )
 
-    # For each species, fetch ecoregions and draw the map
-    for species in species_rows:
+    cur = conn.cursor()
 
-        # Fetch all ecoregions of this species
-        eco_rows = supabase.table('ecoregion_species') \
-            .select('*') \
-            .eq('species_id', species['species_id']) \
-            .execute().data
+    # replace 'table_name' with your table name
+    with open('queries/supabase_query.sql', 'r') as sql_file:
+        sql_query = sql_file.read()
+        cur.execute(sql_query)
 
-        # Fetch the geometries of these ecoregions
-        eco_geometries = []
-        for eco in eco_rows:
-            geometry_rows = supabase.table('ecoregion_shapes') \
-                .select('*') \
-                .eq('eco_code', eco['eco_code']) \
-                .execute().data
-            for row in geometry_rows:
-                eco_geometries.append(shape(row['geometry']))
+    # fetch all rows from table
+    rows = cur.fetchall()
 
-        if eco_geometries:
-            # Create figure and axes
-            fig, ax = plt.subplots(figsize=(1, 1), dpi=100)
+    for row in rows:
 
-            # Loop over each geometry in this eco_code
-            for geometry in eco_geometries:
-                # Convert the Shapely object to a GeoDataFrame
-                gdf = gpd.GeoDataFrame(pd.DataFrame(index=[0]), geometry=[geometry])
+        # Create figure and axes
+        fig, ax = plt.subplots(figsize=(1, 1), dpi=500)
 
-                # Set the GeoDataFrame's CRS to EPSG:4326
-                gdf.set_crs("EPSG:4326", inplace=True)
+        # Simplify the geometry
+        geometry_simplified = shape(ast.literal_eval(row[1]))
 
-                # Plot the GeoDataFrame
-                gdf.plot(ax=ax, color='black')
+        # Convert the Shapely object to a GeoDataFrame
+        gdf = gpd.GeoDataFrame(pd.DataFrame(index=[0]), geometry=[geometry_simplified])
 
-            # Set axes limits to cover the whole world
-            ax.set_xlim([-180, 180])
-            ax.set_ylim([-90, 90])
+        # Set the GeoDataFrame's CRS to EPSG:4326
+        gdf.set_crs("EPSG:4326", inplace=True)
 
-            ax.axis('off')
+        # Plot the GeoDataFrame
+        gdf.plot(ax=ax, color='black')
 
-            # Remove margins
-            plt.margins(0)
+        # Set axes limits to cover the whole world
+        ax.set_xlim([-180, 180])
+        ax.set_ylim([-90, 90])
 
-            # Save as PNG and SVG
-            plt.savefig(f'images//{species["species_id"]}.png', transparent=True)
-            plt.savefig(f'images//{species["species_id"]}.svg', transparent=True)
+        ax.axis('off')
 
-            # Close the figure
-            plt.close(fig)
+        # Remove margins
+        plt.margins(0)
+
+        # Save as PNG and SVG
+        plt.savefig(f'images//{row[0]}.png', transparent=True)
+
+        # Close the figure
+        plt.close(fig)
 
 
 if __name__ == "__main__":

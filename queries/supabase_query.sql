@@ -1,19 +1,18 @@
 SELECT
     species.species_id,
-    species.species,
-    genus.genus_id,
-    CASE WHEN species_ranking.score_binomial < species_ranking.score_common_name
-         THEN species_ranking.score_binomial
-         ELSE species_ranking.score_common_name
-    END AS ranking,
-    species_images.cover_url,
-    species_images.thumbnail_name
+    ST_AsGeoJSON(ST_Union(ST_SimplifyPreserveTopology(ecoregion_shapes.geometry, 0.5)))
+    AS geometry
 FROM
     species
-    LEFT JOIN species_ranking USING (species_id)
-    LEFT JOIN genus USING (genus_id)
-    LEFT JOIN "family" USING (family_id)
-    LEFT JOIN "order" USING (order_id)
-    LEFT JOIN class USING (class_id)
-    LEFT JOIN species_images USING (species_id)
+JOIN
+    ecoregion_species ON species.species_id = ecoregion_species.species_id
+JOIN
+    ecoregion_shapes ON ecoregion_species.eco_code = ecoregion_shapes.eco_code
+JOIN
+    ecoregions ON ecoregion_shapes.eco_code = ecoregions.eco_code
+WHERE
+    species.species_id > 18020 AND species.species_id < 18022 AND ecoregions.area >
+    6000
+GROUP BY
+    species.species_id
 LIMIT 10;
