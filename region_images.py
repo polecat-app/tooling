@@ -13,7 +13,7 @@ from PIL import Image
 load_dotenv()
 
 
-def overlay_images(image_paths, output_path):
+def overlay_images(image_paths, output_path, compress=True, quality=85):
     if len(image_paths) == 1:
 
         # Save the first image
@@ -27,6 +27,13 @@ def overlay_images(image_paths, output_path):
 
     # Open the first image
     base_image = Image.open(image_paths[0]).convert("RGBA")
+    base_width, base_height = base_image.size
+
+    # Create a white background image with transparency
+    white_background = Image.new("RGBA", (base_width, base_height), (255, 255, 255, 255))
+
+    # Paste the base image onto the white background
+    white_background.paste(base_image, (0, 0), mask=base_image)
 
     for image_path in image_paths[1:]:
         # Open the next image
@@ -37,10 +44,17 @@ def overlay_images(image_paths, output_path):
             raise ValueError("Images must have the same size")
 
         # Overlay the images
-        base_image = Image.alpha_composite(base_image, overlay_image)
+        white_background = Image.alpha_composite(white_background, overlay_image)
 
-    # Save the resulting image
-    base_image.save(output_path, "PNG")
+    # Convert the image to RGB mode for saving as JPEG
+    white_background = white_background.convert("RGB")
+
+    # Save the resulting image with compression
+    if compress:
+        white_background.save(output_path, "JPEG", quality=quality, optimize=True)
+    else:
+        white_background.save(output_path, "PNG")
+
 
 
 def overlay_all():
@@ -94,7 +108,7 @@ def save_distribution_per_animal():
         for eco_code in eco_codes:
             png_paths.append(f'images//regions//{eco_code}.png')
 
-        overlay_images(png_paths, f'images//distribution//{species_id}.png')
+        overlay_images(png_paths, f'images//distribution_2//{species_id}.jpg')
 
 
 def get_ecoregion_image():
