@@ -29,7 +29,7 @@ def export_from_supabase():
         cur_supabase = conn_supabase.cursor()
 
         # replace 'table_name' with your table name
-        with open('queries/supabase_query.sql', 'r') as sql_file:
+        with open('queries/supabase_get_ecoregion_shapes.sql', 'r') as sql_file:
             sql_query = sql_file.read()
             cur_supabase.execute(sql_query)
 
