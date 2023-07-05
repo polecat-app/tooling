@@ -18,7 +18,6 @@ supabase_key = os.getenv('SUPABASE_KEY')
 
 MAX_RETURN_WORD_COUNT = 100
 
-import aiohttp
 
 async def get_descriptive_text_from_wiki_async(animal_searchname, max_words=500, min_words = 100, language='en'):
     async with aiohttp.ClientSession() as session:
