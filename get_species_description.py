@@ -251,7 +251,6 @@ async def main():
     # Define the range of species to generate descriptions for
     #2000 to 5000 might have taken taxonomy before description
 
-
     start_id = 90000
     end_id = 96000
     step_size = 200
@@ -297,6 +296,5 @@ async def main():
             else:
                 print(f'Descriptions with species id {check_missing_species_ids(client, start_id,end_id)[1]} are not yet generated!')
             
-
 if __name__ == "__main__":
     asyncio.run(main())
