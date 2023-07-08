@@ -10,6 +10,7 @@ from tenacity import (
     retry,
     stop_after_attempt,
     wait_random_exponential,
+    retry_if_exception_type
 )
 import time
 
@@ -142,15 +143,21 @@ async def coroutine_for_translating_description(conn, species:dict):
     #     print(f"no response from openai for id {species_id}: {common_name}")
     #     return
 
-    @retry(wait=wait_random_exponential(min=10, max=60), stop=stop_after_attempt(10))
+    @retry(
+    retry=retry_if_exception_type((openai.error.APIError, openai.error.APIConnectionError, openai.error.RateLimitError, openai.error.ServiceUnavailableError, openai.error.Timeout)), 
+    wait=wait_random_exponential(multiplier=1, max=60), 
+    stop=stop_after_attempt(15)
+    )
     def completion_with_backoff(**kwargs):
-        return openai.ChatCompletion.acreate(**kwargs)
+        time.sleep(0.1)
+        response = openai.ChatCompletion.acreate(**kwargs)
+        return response
  
     response = await completion_with_backoff(**params)
 
     if response:
         dutch_description = response.choices[0].message.content
-        print(f"generated description for id {species_id}: {common_name}")
+        print(f"generated description for id: {species_id}")
 
         try:
             # Write to the database
@@ -171,9 +178,9 @@ async def coroutine_for_translating_description(conn, species:dict):
 
             # Close the cursor
             cur.close()
-            print("Wrote dutch translation into the database:", latin_name)
-        except Exception as e: 
-            print('An error occured writing to the database:', e)
+            print(f"Wrote dutch translation into the database for id: {species_id}")
+        except Exception as e:  
+            print(f'An error occured writing to the database for species id: {species_id}', e)
 
 
 async def main():
@@ -183,9 +190,9 @@ async def main():
 
     # Define the range of species to translate descriptions for
 
-    start_id = 4000
-    end_id = 5000
-    step_size = 100
+    start_id = 12000
+    end_id = 30000
+    step_size = 1000
     
     for start_sequence_id, end_sequence_id in sequence_ids(start_id, end_id, step_size):
 
@@ -218,11 +225,10 @@ async def main():
             )
 
         # Asynchronously run all coroutinesff
-        await asyncio.gather(*tasks)
+        await asyncio.gather(*tasks, return_exceptions=True)
 
         conn_supabase.close()
-
-        time.sleep(5)
+        print('alle done!')
    
 if __name__ == "__main__":
     asyncio.run(main())
