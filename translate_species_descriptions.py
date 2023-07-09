@@ -10,22 +10,46 @@ from tenacity import (
     retry,
     stop_after_attempt,
     wait_random_exponential,
-    retry_if_exception_type
+    retry_if_exception_type, 
+    retry_if_exception
 )
 import time
 
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 
-def sequence_ids(start_id, end_id ,step_size):
-    sequences = []
-    
-    for i in range(start_id, end_id, step_size):
-        current_end_id = min(i + step_size, end_id)
-        sequences.append((i, current_end_id))
-    return sequences
+def get_species_ids_with_missing_dutch_description(conn, start_id: int, end_id: int):
+    cur = conn.cursor()
 
-#def check_dutch_descriptions(conn, start_id, end_id):
+    # Define your SQL query with placeholders
+    query = """
+    SELECT species_id
+    FROM species_description
+    INNER JOIN species USING(species_id)
+    WHERE species_id BETWEEN %s AND %s AND (dutch IS NULL OR dutch = '');
+    """
+
+    # Execute the query with the provided start_id and end_id
+    cur.execute(query, (start_id, end_id))
+
+    # Fetch the results
+    results = cur.fetchall()
+
+    # Close the cursor
+    cur.close()
+
+    # Extract the species_ids from the results
+    missing_ids = [result[0] for result in results]
+
+    # # If the missing_ids list is empty, print a success message
+    # if not missing_ids:
+    #     print("Success! All species_ids have a Dutch description.")
+    # # Otherwise, print the species_ids that are missing dutch descriptions
+    # else:
+    #     print(f"The following species_ids are missing a Dutch description: {missing_ids}")
+
+    # Return the list of species_ids that are missing dutch descriptions
+    return missing_ids
 
 
 
@@ -89,6 +113,7 @@ def get_species_details_from_supabase(conn, species_id):
 
 
 async def coroutine_for_translating_description(conn, species:dict):
+    
     # Determine input prompt    
     dutch_description = None
 
@@ -101,7 +126,7 @@ async def coroutine_for_translating_description(conn, species:dict):
     species_id = species['species_id']
 
     prompt = f'Translate the following description to dutch: [{english_description}].'
-       
+    
     if dutch_name:
         prompt += f'Use {dutch_name} as the name of the animal'
         if english_name:
@@ -127,37 +152,15 @@ async def coroutine_for_translating_description(conn, species:dict):
         'presence_penalty' : 0.1,
         'frequency_penalty' : 0.1
     }
-
-    # # Asynchronously generate description
-    # max_retries = 10
-    # retry_delay = 2.0
-
-    # for i in range(max_retries):
-    #     try:
-    #         response = await openai.ChatCompletion.acreate(**params)
-    #         break  # exit the loop if the request succeeds
-    #     except:
-    #         await asyncio.sleep(retry_delay * (i+1))  # sleep for longer each time
-    # else:
-    #     response = None  # all retries failed
-    #     print(f"no response from openai for id {species_id}: {common_name}")
-    #     return
-
-    @retry(
-    retry=retry_if_exception_type((openai.error.APIError, openai.error.APIConnectionError, openai.error.RateLimitError, openai.error.ServiceUnavailableError, openai.error.Timeout)), 
-    wait=wait_random_exponential(multiplier=1, max=60), 
-    stop=stop_after_attempt(15)
-    )
-    def completion_with_backoff(**kwargs):
-        time.sleep(0.1)
-        response = openai.ChatCompletion.acreate(**kwargs)
-        return response
  
-    response = await completion_with_backoff(**params)
+    try:
+        response = await openai.ChatCompletion.acreate(**params)  
+    except Exception as e:
+        print(f"Unexpected error occurred: {e}")
+        response = None
 
     if response:
         dutch_description = response.choices[0].message.content
-        print(f"generated description for id: {species_id}")
 
         try:
             # Write to the database
@@ -179,38 +182,41 @@ async def coroutine_for_translating_description(conn, species:dict):
             # Close the cursor
             cur.close()
             print(f"Wrote dutch translation into the database for id: {species_id}")
-        except Exception as e:  
+        except Exception as e:
             print(f'An error occured writing to the database for species id: {species_id}', e)
+        return True
+    else: return False
 
 
-async def main():
+async def main(start_id, end_id, step_size):
 
     # Set up the OpenAI API client
     openai.api_key = api_key
 
-    # Define the range of species to translate descriptions for
+    # set up connection to supabase
+    conn_supabase = psycopg2.connect(
+    dbname=os.getenv("DB"),
+    user=os.getenv("USER"),
+    password=os.getenv("PW"),
+    host=os.getenv("HOST"),
+    port=os.getenv("PORT"))
 
-    start_id = 12000
-    end_id = 30000
-    step_size = 1000
-    
-    for start_sequence_id, end_sequence_id in sequence_ids(start_id, end_id, step_size):
+    # find the species_ids for which we should still generate a dutch description
+    missing_ids = get_species_ids_with_missing_dutch_description(conn_supabase, start_id, end_id)
 
-        # set up connection to supabase
-        conn_supabase = psycopg2.connect(
-        dbname=os.getenv("DB"),
-        user=os.getenv("USER"),
-        password=os.getenv("PW"),
-        host=os.getenv("HOST"),
-        port=os.getenv("PORT"))
-
-        tasks = []
-
-        for species_id in range(start_sequence_id, end_sequence_id):
-            if species_dutch_description_exists(conn_supabase, species_id):
-                print(f'skipped id {species_id}, dutch description exists')
-                continue
+    if not missing_ids:
+        print(f'all species have a dutch description for id {start_id} to {end_id}')
+        return
         
+    def chunks(ids: list, step_size: int):
+        return [ids[i:i+step_size] for i in range(0, len(ids), step_size)]
+    
+    for chunk in chunks(missing_ids, step_size):
+        tasks = []
+        failed_tasks = []
+
+
+        for species_id in chunk:
             record = get_species_details_from_supabase(conn_supabase, species_id)
             if not record:
                 print(f'no species found with id: {species_id}, continuing')
@@ -225,10 +231,44 @@ async def main():
             )
 
         # Asynchronously run all coroutinesff
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        conn_supabase.close()
-        print('alle done!')
-   
+        # Check which tasks failed
+        for i, success in enumerate(results):
+            if not success:
+                failed_species_id = chunk[i]
+                print(f"Task for species_id {failed_species_id} failed")
+                failed_tasks.append(failed_species_id)
+        
+        # Retry the failed tasks
+        if failed_tasks:
+
+            print(f"Retrying failed tasks for species_ids: {failed_tasks}")
+            await asyncio.sleep(30)
+            
+            tasks = []
+            for species_id in failed_tasks:
+                record = get_species_details_from_supabase(conn_supabase, species_id)
+                if not record:
+                    print(f'no species found with id: {species_id}, continuing')
+                    continue
+
+                species = { 'species_id': record[0], 'english_name': record[1], 'dutch_name': record[2], 'genus': record[3], 'species': record[4], 'description': record[5]}
+                
+                print(f"making coroutine for id: {species_id}")
+                
+                task = coroutine_for_translating_description(conn_supabase, species)
+                tasks.append(task)
+
+            await asyncio.gather(*tasks)
+
+    missing_ids = get_species_ids_with_missing_dutch_description(conn_supabase, start_id, end_id)
+    if not missing_ids: 
+        print(f'all done! all species have a dutch description for id {start_id} to {end_id}')
+    else:
+        print(f'all done! but dutch translation missing for species_ids {missing_ids}')
+
+    conn_supabase.close()
+    
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main(0, 30000, 100))
