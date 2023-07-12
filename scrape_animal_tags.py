@@ -66,14 +66,19 @@ def scrape_animal_names(url):
     return animal_data
 
 if __name__ == "__main__":
-    tag_name = 'nocturnal'
-    url = "http://animalia.bio/nocturnal"
-    animal_data = scrape_animal_names(url)
 
-    # Create a DataFrame from the animal datap
-    df = pd.DataFrame(animal_data, columns=['Animal Name', 'Latin Name'])
+    save_new_tags = False
+    if save_new_tags: 
+        tag_name = 'flocking'
+        url = "https://animalia.bio/flocking"
+        animal_data = scrape_animal_names(url)
 
-    # Save the DataFrame as a Parquet file
-    df.to_parquet(f'{tag_name}.parquet', index=False)
+        # Create a DataFrame from the animal datap
+        df = pd.DataFrame(animal_data, columns=['Animal Name', 'Latin Name'])
 
-    print(f"Animal data for {df.shape[0]} {tag_name} animals saved as '{tag_name}.parquet'")
+        # Save the DataFrame as a Parquet file
+        df.to_parquet(f'{tag_name}.parquet', index=False)
+
+        print(f"Animal data for {df.shape[0]} {tag_name} animals saved as '{tag_name}.parquet'")
+
+
